@@ -7,7 +7,7 @@ must implement. This enables pluggable processing logic and easy testing.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 @dataclass
@@ -29,13 +29,19 @@ class BaseProcessor(ABC):
     """
 
     @abstractmethod
-    def process(self, job_id: str, inputs: Dict[str, Any]) -> ProcessingResult:
+    def process(
+        self,
+        job_id: str,
+        inputs: Dict[str, Any],
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> ProcessingResult:
         """
         Process a job with the given inputs.
 
         Args:
             job_id: Unique identifier for the job.
             inputs: Dictionary of input data (e.g., file keys).
+            progress_callback: Optional callback to report progress (0-100).
 
         Returns:
             ProcessingResult with success status and output files.

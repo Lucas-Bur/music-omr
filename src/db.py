@@ -33,9 +33,9 @@ def db_connect(db_url: str) -> Generator[psycopg.Connection, None, None]:
 
 def claim_job(conn: psycopg.Connection, job_id: str) -> Optional[Dict[str, Any]]:
     """
-    Claim a pending job for processing.
+    Claim a job for processing.
 
-    Idempotency: Only claims jobs that are still PENDING.
+    Idempotency: Only claims jobs that are not currently PROCESSING.
 
     Args:
         conn: Database connection.
@@ -50,10 +50,11 @@ def claim_job(conn: psycopg.Connection, job_id: str) -> Optional[Dict[str, Any]]
       UPDATE songs
       SET status = 'PROCESSING',
           "startedAt" = COALESCE("startedAt", NOW()),
-          "errorMessage" = NULL
+          "errorMessage" = NULL,
+          progress = 0
       WHERE id = %(id)s
-        AND status = 'PENDING'
-      RETURNING id, status, "startedAt";
+        AND status != 'PROCESSING'
+      RETURNING id, status, "startedAt", progress;
       """,
             {"id": job_id},
         )
@@ -97,7 +98,8 @@ def mark_completed(conn: psycopg.Connection, job_id: str) -> None:
       UPDATE songs
       SET status = 'COMPLETED',
           "finishedAt" = NOW(),
-          "errorMessage" = NULL
+          "errorMessage" = NULL,
+          progress = 100
       WHERE id = %(id)s;
       """,
             {"id": job_id},
@@ -120,7 +122,7 @@ def insert_output_file(
     with conn.cursor() as cur:
         cur.execute(
             """
-      INSERT INTO files (songId, fileType, s3Key, sizeBytes)
+      INSERT INTO files ("songId", "fileType", "s3Key", "sizeBytes")
       VALUES (%(song_id)s, %(file_type)s, %(s3_key)s, %(size_bytes)s);
       """,
             {

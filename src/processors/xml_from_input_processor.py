@@ -1,8 +1,9 @@
 """Processor for converting PDF/PNG/JPG/JPEG input files to MusicXML using homr."""
 
 import tempfile
+import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 from concurrent.futures import Future
 from dataclasses import dataclass
 
@@ -15,6 +16,7 @@ from musicxml.parser.parser import parse_musicxml
 
 from src.processor import BaseProcessor, ProcessingResult
 from src.s3_client import download_s3_object, upload_bytes_to_s3
+from src.task_types import FileType, get_input_file_types_for_task, TaskType
 
 from homr import color_adjust
 from homr.autocrop import autocrop
@@ -89,15 +91,21 @@ class XMLFromInputProcessor(BaseProcessor):
 
     @property
     def supported_input_types(self) -> List[str]:
-        return ["ORIGINAL_PDF", "ORIGINAL_PNG", "ORIGINAL_JPG", "ORIGINAL_JPEG"]
+        return get_input_file_types_for_task(TaskType.GENERATE_XML_FROM_INPUT)
 
-    def process(self, job_id: str, inputs: Dict[str, Any]) -> ProcessingResult:
+    def process(
+        self,
+        job_id: str,
+        inputs: Dict[str, Any],
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> ProcessingResult:
         """
         Process a PDF/PNG/JPG/JPEG file and convert to MusicXML.
 
         Args:
             job_id: The job/song identifier.
             inputs: Dict containing 'input_key' for the input file.
+            progress_callback: Optional callback to report progress (0-100).
 
         Returns:
             ProcessingResult with MusicXML output file info.
@@ -161,6 +169,9 @@ class XMLFromInputProcessor(BaseProcessor):
                 xml_files = []
                 for idx, image_path in enumerate(image_paths):
                     print(f"Processing page {idx + 1}/{len(image_paths)}")
+                    if progress_callback:
+                        progress = int(((idx) / len(image_paths)) * 100)
+                        progress_callback(progress)
                     xml_content = self._process_single_image(
                         str(image_path), config, xml_generator_args
                     )
@@ -173,12 +184,15 @@ class XMLFromInputProcessor(BaseProcessor):
                 # Merge multiple pages into single MusicXML
                 if len(xml_files) > 1:
                     print(f"Merging {len(xml_files)} pages into single MusicXML")
-                    final_xml = self._merge_musicxml_files(xml_files)
+                    final_xml = self._merge_musicxml_files(xml_files, temp_path)
                 else:
                     final_xml = xml_files[0].read_text()
 
+                if progress_callback:
+                    progress_callback(100)
+
                 # Upload output using existing S3 client function
-                output_key = f"jobs/{job_id}/music.xml"
+                output_key = f"jobs/{job_id}/music_{int(time.time())}.xml"
                 upload_bytes_to_s3(
                     self.s3_client,
                     self.bucket,
@@ -191,7 +205,7 @@ class XMLFromInputProcessor(BaseProcessor):
                     success=True,
                     output_files=[
                         {
-                            "file_type": "MUSIC_XML",
+                            "file_type": FileType.MUSIC_XML.value,
                             "s3_key": output_key,
                             "size_bytes": len(final_xml.encode("utf-8")),
                         }
@@ -448,38 +462,38 @@ class XMLFromInputProcessor(BaseProcessor):
         """Extract clef attributes from XMLClef element."""
         attributes = {}
         for a in clef.get_children_of_type(mxl.XMLSign):
-            attributes["Sign"] = a.value_
+            attributes["Sign"] = a.value_  # type: ignore
         for a in clef.get_children_of_type(mxl.XMLLine):
-            attributes["Line"] = a.value_
+            attributes["Line"] = a.value_  # type: ignore
         for a in clef.get_children_of_type(mxl.XMLClefOctaveChange):
-            attributes["ClefOctaveChange"] = a.value_
+            attributes["ClefOctaveChange"] = a.value_  # type: ignore
         return attributes
 
     def _time_attributes(self, time: mxl.XMLTime) -> Dict[str, Any]:
         """Extract time signature attributes from XMLTime element."""
         attributes = {}
         for a in time.get_children_of_type(mxl.XMLBeats):
-            attributes["Beats"] = a.value_
+            attributes["Beats"] = a.value_  # type: ignore
         for a in time.get_children_of_type(mxl.XMLBeatType):
-            attributes["BeatType"] = a.value_
+            attributes["BeatType"] = a.value_  # type: ignore
         for a in time.get_children_of_type(mxl.XMLInterchangeable):
-            attributes["Interchangeable"] = a.value_
+            attributes["Interchangeable"] = a.value_  # type: ignore
         for a in time.get_children_of_type(mxl.XMLSenzaMisura):
-            attributes["SenzaMisura"] = a.value_
+            attributes["SenzaMisura"] = a.value_  # type: ignore
         return attributes
 
     def _key_attributes(self, key: mxl.XMLKey) -> Dict[str, Any]:
         """Extract key signature attributes from XMLKey element."""
         attributes = {}
         for a in key.get_children_of_type(mxl.XMLFifths):
-            attributes["Fifths"] = a.value_
+            attributes["Fifths"] = a.value_  # type: ignore
         for a in key.get_children_of_type(mxl.XMLKeyAlter):
-            attributes["KeyAlter"] = a.value_
+            attributes["KeyAlter"] = a.value_  # type: ignore
         for a in key.get_children_of_type(mxl.XMLMode):
-            attributes["Mode"] = a.value_
+            attributes["Mode"] = a.value_  # type: ignore
         return attributes
 
-    def _merge_musicxml_files(self, xml_files: List[Path]) -> str:
+    def _merge_musicxml_files(self, xml_files: List[Path], temp_dir: Path) -> str:
         """
         Merge multiple MusicXML files into a single MusicXML document.
 
@@ -507,7 +521,7 @@ class XMLFromInputProcessor(BaseProcessor):
         # Main file is the first of the list
         main_file = xml_files[0]
         print(f"Starting with {main_file}")
-        m = parse_musicxml(main_file)
+        m = parse_musicxml(str(main_file))
 
         # Extract the last attributes from each part
         last_parts_attributes = []
@@ -528,7 +542,7 @@ class XMLFromInputProcessor(BaseProcessor):
         # Process subsequent files
         for f in xml_files[1:]:
             print(f"Merging {f}")
-            b = parse_musicxml(f)
+            b = parse_musicxml(str(f))
             ip = 0  # Index for main file parts
 
             for part1 in m.get_children_of_type(mxl.XMLPart):
@@ -599,8 +613,6 @@ class XMLFromInputProcessor(BaseProcessor):
                 ip += 1
 
         # Write merged MusicXML to string
-        import io
-
-        output = io.StringIO()
-        m.write(output)
-        return output.getvalue()
+        merged_file = temp_dir / "merged.musicxml"
+        m.write(str(merged_file))
+        return merged_file.read_text()

@@ -18,9 +18,9 @@ from src.db import (
     mark_completed,
     mark_failed,
 )
-from src.processor import BaseProcessor
+from src.processor import BaseProcessor, ProcessingResult
 from src.s3_client import make_s3_client
-from src.task_types import validate_task_message, TaskType
+from src.task_types import validate_task_message
 
 
 class JobWorker:
@@ -60,6 +60,7 @@ class JobWorker:
     def start(self) -> None:
         """Start consuming messages from the queue."""
         params = pika.URLParameters(self.amqp_url)
+        params.heartbeat = 600  # 10 minutes to handle long-running tasks
 
         while True:
             try:
@@ -132,8 +133,8 @@ class JobWorker:
             channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
 
-        try:
-            with db_connect(self.config.db_url) as conn:
+        with db_connect(self.config.db_url) as conn:
+            try:
                 print(f"[debug] claiming job")
                 # Transaction 1: Claim the job
                 conn.execute("BEGIN;")
@@ -145,16 +146,22 @@ class JobWorker:
                     channel.basic_ack(delivery_tag=method.delivery_tag)
                     return
 
-                # Transaction 2: Process and complete
+                # Process outside transaction
+                progress_callback = self._create_progress_callback(conn, job_id)
+                result = self._process_task(
+                    job_id, task_type, task_params, progress_callback
+                )
+
+                # Transaction: Complete only database updates
                 conn.execute("BEGIN;")
-                self._process_and_complete(conn, job_id, task_type, task_params)
+                self._complete_task(conn, job_id, result)
                 conn.commit()
 
                 channel.basic_ack(delivery_tag=method.delivery_tag)
 
-        except Exception as e:
-            print(e)
-            self._handle_error(conn, channel, method, job_id, e)
+            except Exception as e:
+                print(e)
+                self._handle_error(conn, channel, method, job_id, e)
 
     def _parse_message(self, body: bytes) -> Dict[str, Any]:
         """Parse task message from message body."""
@@ -171,28 +178,44 @@ class JobWorker:
         """Claim a pending job for processing."""
         return claim_job(conn, job_id)
 
-    def _process_and_complete(
+    def _create_progress_callback(self, conn: psycopg.Connection, job_id: str):
+        """Create a progress callback that updates the database."""
+
+        def update_progress(percentage: int):
+            with conn.cursor() as cur:
+                conn.execute("BEGIN;")
+                cur.execute(
+                    "UPDATE songs SET progress = %s WHERE id = %s", (percentage, job_id)
+                )
+                conn.commit()
+
+        return update_progress
+
+    def _process_task(
         self,
-        conn: psycopg.Connection,
         job_id: str,
         task_type: str,
         task_params: Dict[str, Any],
-    ) -> None:
+        progress_callback,
+    ) -> ProcessingResult:
         """
-        Process a task and mark it as completed.
+        Process a task without database operations.
 
         Args:
-            conn: Database connection.
             job_id: Job identifier.
             task_type: Type of the task to process.
             task_params: Task-specific parameters.
+            progress_callback: Callback to report progress.
+
+        Returns:
+            ProcessingResult from the processor.
         """
-        # Fetch task-specific input files
-        inputs = self._fetch_task_inputs(conn, job_id, task_type, task_params)
+        # Fetch task-specific input files (no DB needed here)
+        inputs = self._fetch_task_inputs(None, job_id, task_type, task_params)
         print(f"[debug] fetched inputs: {inputs}", flush=True)
 
         # Process using the configured processor
-        result = self.processor.process(job_id, inputs)
+        result = self.processor.process(job_id, inputs, progress_callback)
         print(
             f"[debug] processing result: success={result.success}, output_files={len(result.output_files)}",
             flush=True,
@@ -201,6 +224,22 @@ class JobWorker:
         if not result.success:
             raise RuntimeError(result.error_message or "Processing failed")
 
+        return result
+
+    def _complete_task(
+        self,
+        conn: psycopg.Connection,
+        job_id: str,
+        result: ProcessingResult,
+    ) -> None:
+        """
+        Complete a task by inserting files and marking as completed.
+
+        Args:
+            conn: Database connection.
+            job_id: Job identifier.
+            result: Processing result with output files.
+        """
         # Insert output file records
         for output in result.output_files:
             insert_output_file(
@@ -216,7 +255,7 @@ class JobWorker:
 
     def _fetch_task_inputs(
         self,
-        conn: psycopg.Connection,
+        conn: Optional[psycopg.Connection],
         job_id: str,
         task_type: str,
         task_params: Dict[str, Any],
@@ -278,7 +317,10 @@ class JobWorker:
                     pass
 
         # Don't requeue to avoid poison message loops
-        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        try:
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        except Exception as e:
+            print(f"[error] failed to nack message: {e}", flush=True)
 
 
 def create_worker(config: Config, processor: BaseProcessor) -> JobWorker:

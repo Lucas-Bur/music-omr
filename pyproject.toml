@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.42.24",
+    "dotenv>=0.9.9",
     "homr>=0.6.0",
     "ipykernel>=7.1.0",
     "matplotlib>=3.10.8",

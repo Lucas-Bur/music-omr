@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, List
 from src.processor import BaseProcessor, ProcessingResult
+from src.task_types import FileType, TaskType, get_input_file_types_for_task
 
 
 class VoicesFromXMLProcessor(BaseProcessor):
@@ -27,9 +28,14 @@ class VoicesFromXMLProcessor(BaseProcessor):
 
     @property
     def supported_input_types(self) -> List[str]:
-        return ["MUSIC_XML"]
+        return get_input_file_types_for_task(TaskType.GENERATE_VOICES_FROM_XML)
 
-    def process(self, job_id: str, inputs: Dict[str, Any]) -> ProcessingResult:
+    def process(
+        self,
+        job_id: str,
+        inputs: Dict[str, Any],
+        progress_callback=None,
+    ) -> ProcessingResult:
         """
         Process a MusicXML file and generate voice files.
 
@@ -97,19 +103,9 @@ class VoicesFromXMLProcessor(BaseProcessor):
         # Dummy implementation - replace with real voice synthesis
         voice_files = [
             {
-                "file_type": "VOICE_1",
+                "file_type": FileType.AUDIO.value,
                 "key": f"jobs/{job_id}/voice_1.mp3",
                 "data": self._create_dummy_voice_data("Soprano"),
-            },
-            {
-                "file_type": "VOICE_2",
-                "key": f"jobs/{job_id}/voice_2.mp3",
-                "data": self._create_dummy_voice_data("Alto"),
-            },
-            {
-                "file_type": "VOICE_3",
-                "key": f"jobs/{job_id}/voice_3.mp3",
-                "data": self._create_dummy_voice_data("Tenor"),
             },
         ]
         return voice_files

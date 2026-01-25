@@ -11,27 +11,18 @@ class TaskType(Enum):
     GENERATE_VOICES_FROM_XML = "generate_voices_from_xml"
 
 
-# Task type to file type mapping
-TASK_TYPE_TO_INPUT_FILE_TYPES = {
-    TaskType.GENERATE_XML_FROM_INPUT: [
-        "ORIGINAL_PDF",
-        "ORIGINAL_PNG",
-        "ORIGINAL_JPG",
-        "ORIGINAL_JPEG",
-    ],
-    TaskType.GENERATE_VOICES_FROM_XML: ["MUSIC_XML"],
-}
+class FileType(Enum):
+    """Supported file types for input and output."""
+
+    SCORE = "SCORE"
+    MUSIC_XML = "MUSIC_XML"
+    AUDIO = "AUDIO"
+
 
 # Task type to processor name mapping
 TASK_TYPE_TO_PROCESSOR = {
     TaskType.GENERATE_XML_FROM_INPUT: "xml_from_input_processor",
     TaskType.GENERATE_VOICES_FROM_XML: "voices_from_xml_processor",
-}
-
-# Task type to output file type mapping
-TASK_TYPE_TO_OUTPUT_FILE_TYPES = {
-    TaskType.GENERATE_XML_FROM_INPUT: ["MUSIC_XML"],
-    TaskType.GENERATE_VOICES_FROM_XML: ["VOICE_1", "VOICE_2", "VOICE_3"],
 }
 
 
@@ -72,26 +63,6 @@ def validate_task_message(message: Dict[str, Any]) -> None:
         raise ValueError("input_key must be a string")
 
 
-def get_task_input_file_types(task_type: str) -> list:
-    """
-    Get supported input file types for a task type.
-
-    Args:
-        task_type: The task type string.
-
-    Returns:
-        List of supported file types.
-
-    Raises:
-        ValueError: If task_type is invalid.
-    """
-    try:
-        enum_type = TaskType(task_type)
-        return TASK_TYPE_TO_INPUT_FILE_TYPES[enum_type]
-    except KeyError:
-        raise ValueError(f"Unknown task_type: {task_type}")
-
-
 def get_task_processor_name(task_type: str) -> str:
     """
     Get processor name for a task type.
@@ -112,21 +83,37 @@ def get_task_processor_name(task_type: str) -> str:
         raise ValueError(f"Unknown task_type: {task_type}")
 
 
-def get_task_output_file_types(task_type: str) -> list:
+def get_input_file_types_for_task(task_type: TaskType) -> list[str]:
+    """
+    Get supported input file types for a task type.
+
+    Args:
+        task_type: The task type enum.
+
+    Returns:
+        List of supported file types as strings.
+    """
+    if task_type == TaskType.GENERATE_XML_FROM_INPUT:
+        return [FileType.SCORE.value]
+    elif task_type == TaskType.GENERATE_VOICES_FROM_XML:
+        return [FileType.MUSIC_XML.value]
+    else:
+        return []
+
+
+def get_output_file_types_for_task(task_type: TaskType) -> list[str]:
     """
     Get expected output file types for a task type.
 
     Args:
-        task_type: The task type string.
+        task_type: The task type enum.
 
     Returns:
-        List of expected output file types.
-
-    Raises:
-        ValueError: If task_type is invalid.
+        List of expected output file types as strings.
     """
-    try:
-        enum_type = TaskType(task_type)
-        return TASK_TYPE_TO_OUTPUT_FILE_TYPES[enum_type]
-    except KeyError:
-        raise ValueError(f"Unknown task_type: {task_type}")
+    if task_type == TaskType.GENERATE_XML_FROM_INPUT:
+        return [FileType.MUSIC_XML.value]
+    elif task_type == TaskType.GENERATE_VOICES_FROM_XML:
+        return [FileType.AUDIO.value]
+    else:
+        return []
